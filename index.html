@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jungle Gem Platformer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+    "react/": "https://aistudiocdn.com/react@^19.1.1/",
+    "react": "https://aistudiocdn.com/react@^19.1.1",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.21.0"
+  }
+}
+</script>
+<style>
+  @keyframes heart-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.4); filter: brightness(1.5); }
+  }
+  .animate-heart-pulse {
+    animation: heart-pulse 0.5s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+  }
+  @keyframes full-health-pulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 8px rgba(0,255,200,.3); }
+    50% { transform: scale(1.05); box-shadow: 0 0 12px rgba(0,255,200,.6); }
+  }
+  .animate-full-health-pulse {
+    animation: full-health-pulse 2s infinite ease-in-out;
+  }
+  @keyframes heart-damage {
+    0% { transform: scale(1) rotate(0deg); }
+    25% { transform: scale(1.2) rotate(-10deg); }
+    50% { transform: scale(0.9) rotate(10deg); }
+    75% { transform: scale(1.1) rotate(-5deg); }
+    100% { transform: scale(1) rotate(0deg); }
+  }
+  .animate-heart-damage {
+      animation: heart-damage 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+  }
+</style>
+</head>
+  <body class="bg-gray-900 text-gray-200 font-sans">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
