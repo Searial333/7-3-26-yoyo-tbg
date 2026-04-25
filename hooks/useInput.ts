@@ -1,62 +1,261 @@
+import React, { useEffect, useRef, useState } from 'react';
+import type { InputState, Vec2 } from '../types';
+import { GAME_TOUCH_CONFIG, type GameTouchControlId } from '../constants/touchConfig';
 
-import React, { useState, useEffect, useRef } from 'react';
-import type { InputState } from '../types';
-
-export const TOUCH_CONFIG = {
-  dpad: { x: 0.15, y: 0.75, radius: 0.12 },
-  jump: { x: 0.85, y: 0.75, radius: 0.09 },
-  dash: { x: 0.70, y: 0.85, radius: 0.07 },
-  roll: { x: 0.80, y: 0.55, radius: 0.07 },
-  shoot: { x: 0.9, y: 0.55, radius: 0.07 },
-  throw: { x: 0.70, y: 0.65, radius: 0.07 },
-  interact: { x: 0.85, y: 0.35, radius: 0.07 },
-};
-
-// Standard Gamepad Mapping (XInput style)
+// Standard Xbox / XInput-style mapping.
 const GP = {
-    A: 0,
-    B: 1,
-    X: 2,
-    Y: 3,
-    LB: 4,
-    RB: 5,
-    LT: 6,
-    RT: 7,
-    Back: 8,
-    Start: 9,
-    L3: 10,
-    R3: 11,
-    Up: 12,
-    Down: 13,
-    Left: 14,
-    Right: 15,
+  A: 0,
+  B: 1,
+  X: 2,
+  Y: 3,
+  LB: 4,
+  RB: 5,
+  LT: 6,
+  RT: 7,
+  Back: 8,
+  Start: 9,
+  L3: 10,
+  R3: 11,
+  Up: 12,
+  Down: 13,
+  Left: 14,
+  Right: 15,
 };
 
-const DEADZONE = 0.2;
+const DEADZONE = 0.22;
 
-const applyDeadzone = (val: number): number => {
-    return Math.abs(val) > DEADZONE ? (val - Math.sign(val) * DEADZONE) / (1 - DEADZONE) : 0;
+const EMPTY_INPUT: InputState = {
+  left: false,
+  right: false,
+  up: false,
+  down: false,
+  jump: false,
+  roll: false,
+  dash: false,
+  shoot: false,
+  throw: false,
+  bomb: false,
+  interact: false,
+  leftStick: { x: 0, y: 0 },
+  rightStick: { x: 0, y: 0 },
+  jumpDown: false,
+  rollDown: false,
+  downDown: false,
+  dashDown: false,
+  shootDown: false,
+  throwDown: false,
+  bombDown: false,
+  interactDown: false,
 };
 
-export const useInput = (containerRef: React.RefObject<HTMLElement>): InputState => {
-  const [keys, setKeys] = useState<Record<string, boolean>>({});
-  const [gamepad, setGamepad] = useState<Gamepad | null>(null);
-  const [touchInput, setTouchInput] = useState<Record<string, boolean>>({});
-  
-  const previousInput = useRef<InputState>({
-      left: false, right: false, up: false, down: false,
-      jump: false, roll: false, dash: false, shoot: false, throw: false, bomb: false, interact: false,
-      leftStick: { x: 0, y: 0 }, rightStick: { x: 0, y: 0 },
-      jumpDown: false, rollDown: false, downDown: false, dashDown: false, shootDown: false, throwDown: false, bombDown: false, interactDown: false
-  });
+const interactiveSelector = [
+  'button',
+  'a',
+  'input',
+  'select',
+  'textarea',
+  '[role="button"]',
+  '[data-ui="true"]',
+  '[data-touch-ui="true"]',
+].join(',');
+
+function cloneInput(input: InputState): InputState {
+  return {
+    ...input,
+    leftStick: { ...input.leftStick },
+    rightStick: { ...input.rightStick },
+  };
+}
+
+function applyDeadzone(value: number): number {
+  if (Math.abs(value) <= DEADZONE) return 0;
+  return (value - Math.sign(value) * DEADZONE) / (1 - DEADZONE);
+}
+
+function clampStick(x: number, y: number): Vec2 {
+  const mag = Math.hypot(x, y);
+  if (mag <= 1) return { x, y };
+  return { x: x / mag, y: y / mag };
+}
+
+function safeGetGamepads(): Gamepad[] {
+  try {
+    return Array.from(navigator.getGamepads?.() ?? []).filter(Boolean) as Gamepad[];
+  } catch {
+    return [];
+  }
+}
+
+function isUiTouchTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest(interactiveSelector));
+}
+
+interface TouchRuntime {
+  leftStickId: number | null;
+  rightStickId: number | null;
+  buttonTouches: Map<number, GameTouchControlId>;
+  leftStick: Vec2;
+  rightStick: Vec2;
+  buttons: Partial<Record<GameTouchControlId, boolean>>;
+}
+
+function createTouchRuntime(): TouchRuntime {
+  return {
+    leftStickId: null,
+    rightStickId: null,
+    buttonTouches: new Map(),
+    leftStick: { x: 0, y: 0 },
+    rightStick: { x: 0, y: 0 },
+    buttons: {},
+  };
+}
+
+function getNormalizedTouch(touch: Touch, rect: DOMRect) {
+  return {
+    x: (touch.clientX - rect.left) / rect.width,
+    y: (touch.clientY - rect.top) / rect.height,
+  };
+}
+
+function distanceToControl(x: number, y: number, id: GameTouchControlId): number {
+  const cfg = GAME_TOUCH_CONFIG[id];
+  return Math.hypot(x - cfg.cx, y - cfg.cy);
+}
+
+function classifyTouch(x: number, y: number): GameTouchControlId | null {
+  const candidates: GameTouchControlId[] = ['leftStick', 'rightStick', 'dpad', 'a', 'b', 'x', 'y', 'lb', 'rb', 'lt', 'rt'];
+  let best: GameTouchControlId | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const id of candidates) {
+    const cfg = GAME_TOUCH_CONFIG[id];
+    const dist = distanceToControl(x, y, id);
+    if (dist <= cfg.radius && dist < bestDistance) {
+      best = id;
+      bestDistance = dist;
+    }
+  }
+
+  return best;
+}
+
+function updateStickFromTouch(runtime: TouchRuntime, touch: Touch, rect: DOMRect, id: 'leftStick' | 'rightStick') {
+  const cfg = GAME_TOUCH_CONFIG[id];
+  const pos = getNormalizedTouch(touch, rect);
+  const gate = cfg.gateRadius ?? cfg.radius;
+  const aspect = rect.width / rect.height;
+  const dx = (pos.x - cfg.cx) / gate;
+  const dy = ((pos.y - cfg.cy) * aspect) / gate;
+  const stick = clampStick(dx, dy);
+  runtime[id] = stick;
+}
+
+function computeInput(keys: Record<string, boolean>, touch: TouchRuntime, gamepad: Gamepad | null, previous: InputState): InputState {
+  const gpBtn = (index: number) => {
+    const button = gamepad?.buttons[index];
+    if (!button) return false;
+    return button.pressed || button.value > 0.25;
+  };
+
+  let lx = gamepad ? applyDeadzone(gamepad.axes[0] ?? 0) : 0;
+  let ly = gamepad ? applyDeadzone(gamepad.axes[1] ?? 0) : 0;
+  let rx = gamepad ? applyDeadzone(gamepad.axes[2] ?? 0) : 0;
+  let ry = gamepad ? applyDeadzone(gamepad.axes[3] ?? 0) : 0;
+
+  if (Math.hypot(touch.leftStick.x, touch.leftStick.y) > 0.05) {
+    lx = touch.leftStick.x;
+    ly = touch.leftStick.y;
+  }
+
+  if (Math.hypot(touch.rightStick.x, touch.rightStick.y) > 0.05) {
+    rx = touch.rightStick.x;
+    ry = touch.rightStick.y;
+  }
+
+  if (keys.KeyA || keys.ArrowLeft || touch.buttons.dpad && touch.leftStick.x < -0.2) lx = -1;
+  if (keys.KeyD || keys.ArrowRight || touch.buttons.dpad && touch.leftStick.x > 0.2) lx = 1;
+  if (keys.KeyW || keys.ArrowUp || touch.buttons.dpad && touch.leftStick.y < -0.2) ly = -1;
+  if (keys.KeyS || keys.ArrowDown || touch.buttons.dpad && touch.leftStick.y > 0.2) ly = 1;
+
+  const input: InputState = {
+    leftStick: { x: lx, y: ly },
+    rightStick: { x: rx, y: ry },
+
+    left: lx < -0.45 || gpBtn(GP.Left),
+    right: lx > 0.45 || gpBtn(GP.Right),
+    up: ly < -0.45 || gpBtn(GP.Up),
+    down: ly > 0.45 || gpBtn(GP.Down),
+
+    jump: Boolean(keys.Space || keys.KeyK || gpBtn(GP.A) || touch.buttons.a),
+    roll: Boolean(keys.ShiftLeft || keys.ShiftRight || gpBtn(GP.B) || touch.buttons.b),
+    dash: Boolean(keys.KeyX || keys.KeyJ || gpBtn(GP.X) || touch.buttons.x),
+    shoot: Boolean(keys.KeyC || gpBtn(GP.Y) || gpBtn(GP.RT) || touch.buttons.y || touch.buttons.rt),
+    throw: Boolean(keys.KeyV || gpBtn(GP.RB) || touch.buttons.rb),
+    bomb: Boolean(keys.KeyZ || gpBtn(GP.LB) || touch.buttons.lb),
+    interact: Boolean(keys.KeyE || gpBtn(GP.LT) || touch.buttons.lt),
+
+    jumpDown: false,
+    rollDown: false,
+    downDown: false,
+    dashDown: false,
+    shootDown: false,
+    throwDown: false,
+    bombDown: false,
+    interactDown: false,
+  };
+
+  input.jumpDown = input.jump && !previous.jump;
+  input.rollDown = input.roll && !previous.roll;
+  input.downDown = input.down && !previous.down;
+  input.dashDown = input.dash && !previous.dash;
+  input.shootDown = input.shoot && !previous.shoot;
+  input.throwDown = input.throw && !previous.throw;
+  input.bombDown = input.bomb && !previous.bomb;
+  input.interactDown = input.interact && !previous.interact;
+
+  return input;
+}
+
+export function consumeInputEdges(inputRef: React.MutableRefObject<InputState>) {
+  inputRef.current.jumpDown = false;
+  inputRef.current.rollDown = false;
+  inputRef.current.downDown = false;
+  inputRef.current.dashDown = false;
+  inputRef.current.shootDown = false;
+  inputRef.current.throwDown = false;
+  inputRef.current.bombDown = false;
+  inputRef.current.interactDown = false;
+}
+
+export const useInput = (containerRef: React.RefObject<HTMLElement>) => {
+  const keysRef = useRef<Record<string, boolean>>({});
+  const touchRef = useRef<TouchRuntime>(createTouchRuntime());
+  const previousRef = useRef<InputState>(cloneInput(EMPTY_INPUT));
+  const inputRef = useRef<InputState>(cloneInput(EMPTY_INPUT));
+  const gamepadRef = useRef<Gamepad | null>(null);
+  const [input, setInput] = useState<InputState>(() => cloneInput(EMPTY_INPUT));
+  const [gamepadName, setGamepadName] = useState<string>('');
+
+  const recompute = () => {
+    const next = computeInput(keysRef.current, touchRef.current, gamepadRef.current, previousRef.current);
+    inputRef.current = next;
+    previousRef.current = cloneInput(next);
+    setInput(cloneInput(next));
+  };
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => setKeys(prev => ({ ...prev, [e.code]: true }));
-    const handleKeyUp = (e: KeyboardEvent) => setKeys(prev => ({ ...prev, [e.code]: false }));
+    const handleKeyDown = (e: KeyboardEvent) => {
+      keysRef.current[e.code] = true;
+      recompute();
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      keysRef.current[e.code] = false;
+      recompute();
+    };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
@@ -64,70 +263,122 @@ export const useInput = (containerRef: React.RefObject<HTMLElement>): InputState
   }, []);
 
   useEffect(() => {
-      const updateGamepad = () => {
-          const gp = navigator.getGamepads()[0];
-          setGamepad(gp);
-          requestAnimationFrame(updateGamepad);
-      };
-      const frameId = requestAnimationFrame(updateGamepad);
-      return () => cancelAnimationFrame(frameId);
+    let frameId = 0;
+    let lastName = '';
+
+    const poll = () => {
+      const pad = safeGetGamepads()[0] ?? null;
+      gamepadRef.current = pad;
+      const nextName = pad?.id ?? '';
+      if (nextName !== lastName) {
+        lastName = nextName;
+        setGamepadName(nextName);
+      }
+      recompute();
+      frameId = requestAnimationFrame(poll);
+    };
+
+    frameId = requestAnimationFrame(poll);
+    return () => cancelAnimationFrame(frameId);
   }, []);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !('ontouchstart' in window)) return;
 
-    const activeTouches = new Map<number, { x: number; y: number }>();
-
-    const calculateTouchInput = () => {
-      const newState: Record<string, boolean> = {};
-      const rect = el.getBoundingClientRect();
-
-      for (const touch of activeTouches.values()) {
-        const normalizedX = (touch.x - rect.left) / rect.width;
-        const normalizedY = (touch.y - rect.top) / rect.height;
-
-        // D-pad (Movement)
-        const dx = normalizedX - TOUCH_CONFIG.dpad.x;
-        const dy = normalizedY - TOUCH_CONFIG.dpad.y;
-        if (Math.hypot(dx, dy) < TOUCH_CONFIG.dpad.radius) {
-          if (Math.abs(dx) > Math.abs(dy)) {
-            newState[dx > 0 ? 'moveRight' : 'moveLeft'] = true;
-          } else {
-            newState[dy > 0 ? 'moveDown' : 'moveUp'] = true;
-          }
-        }
-        
-        // Buttons
-        const checkBtn = (key: string, cfg: any) => {
-            const bdx = normalizedX - cfg.x;
-            const bdy = normalizedY - cfg.y;
-            if (Math.hypot(bdx, bdy) < cfg.radius) newState[key] = true;
-        }
-        checkBtn('jump', TOUCH_CONFIG.jump);
-        checkBtn('dash', TOUCH_CONFIG.dash);
-        checkBtn('roll', TOUCH_CONFIG.roll);
-        checkBtn('shoot', TOUCH_CONFIG.shoot);
-        checkBtn('throw', TOUCH_CONFIG.throw);
-        checkBtn('interact', TOUCH_CONFIG.interact);
-      }
-      setTouchInput(newState);
-    };
+    const runtime = touchRef.current;
 
     const handleTouchStart = (e: TouchEvent) => {
-      e.preventDefault();
-      Array.from(e.changedTouches).forEach(t => activeTouches.set(t.identifier, { x: t.clientX, y: t.clientY }));
-      calculateTouchInput();
+      if (isUiTouchTarget(e.target)) return;
+      const rect = el.getBoundingClientRect();
+      let claimed = false;
+
+      for (const t of Array.from(e.changedTouches)) {
+        const pos = getNormalizedTouch(t, rect);
+        const id = classifyTouch(pos.x, pos.y);
+        if (!id) continue;
+        claimed = true;
+
+        if (id === 'leftStick' && runtime.leftStickId === null) {
+          runtime.leftStickId = t.identifier;
+          updateStickFromTouch(runtime, t, rect, 'leftStick');
+        } else if (id === 'rightStick' && runtime.rightStickId === null) {
+          runtime.rightStickId = t.identifier;
+          updateStickFromTouch(runtime, t, rect, 'rightStick');
+        } else if (id === 'dpad') {
+          runtime.buttonTouches.set(t.identifier, 'dpad');
+          const cfg = GAME_TOUCH_CONFIG.dpad;
+          const aspect = rect.width / rect.height;
+          runtime.leftStick = clampStick((pos.x - cfg.cx) / cfg.radius, ((pos.y - cfg.cy) * aspect) / cfg.radius);
+          runtime.buttons.dpad = true;
+        } else {
+          runtime.buttonTouches.set(t.identifier, id);
+          runtime.buttons[id] = true;
+        }
+      }
+
+      if (claimed) {
+        e.preventDefault();
+        recompute();
+      }
     };
+
     const handleTouchMove = (e: TouchEvent) => {
-      e.preventDefault();
-      Array.from(e.changedTouches).forEach(t => activeTouches.set(t.identifier, { x: t.clientX, y: t.clientY }));
-      calculateTouchInput();
+      const rect = el.getBoundingClientRect();
+      let claimed = false;
+
+      for (const t of Array.from(e.changedTouches)) {
+        if (runtime.leftStickId === t.identifier) {
+          claimed = true;
+          updateStickFromTouch(runtime, t, rect, 'leftStick');
+        }
+        if (runtime.rightStickId === t.identifier) {
+          claimed = true;
+          updateStickFromTouch(runtime, t, rect, 'rightStick');
+        }
+        if (runtime.buttonTouches.get(t.identifier) === 'dpad') {
+          claimed = true;
+          const pos = getNormalizedTouch(t, rect);
+          const cfg = GAME_TOUCH_CONFIG.dpad;
+          const aspect = rect.width / rect.height;
+          runtime.leftStick = clampStick((pos.x - cfg.cx) / cfg.radius, ((pos.y - cfg.cy) * aspect) / cfg.radius);
+        }
+      }
+
+      if (claimed) {
+        e.preventDefault();
+        recompute();
+      }
     };
+
     const handleTouchEnd = (e: TouchEvent) => {
-      e.preventDefault();
-      Array.from(e.changedTouches).forEach(t => activeTouches.delete(t.identifier));
-      calculateTouchInput();
+      let claimed = false;
+
+      for (const t of Array.from(e.changedTouches)) {
+        if (runtime.leftStickId === t.identifier) {
+          runtime.leftStickId = null;
+          runtime.leftStick = { x: 0, y: 0 };
+          claimed = true;
+        }
+        if (runtime.rightStickId === t.identifier) {
+          runtime.rightStickId = null;
+          runtime.rightStick = { x: 0, y: 0 };
+          claimed = true;
+        }
+
+        const btn = runtime.buttonTouches.get(t.identifier);
+        if (btn) {
+          runtime.buttonTouches.delete(t.identifier);
+          runtime.buttons[btn] = false;
+          if (btn === 'dpad') runtime.leftStick = { x: 0, y: 0 };
+          claimed = true;
+        }
+      }
+
+      if (claimed) {
+        e.preventDefault();
+        recompute();
+      }
     };
 
     el.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -143,73 +394,11 @@ export const useInput = (containerRef: React.RefObject<HTMLElement>): InputState
     };
   }, [containerRef]);
 
-  // --- CONTROL MAPPING ---
-
-  // Gamepad Axes
-  let lx = 0, ly = 0, rx = 0, ry = 0;
-  if (gamepad) {
-      lx = applyDeadzone(gamepad.axes[0]);
-      ly = applyDeadzone(gamepad.axes[1]);
-      rx = applyDeadzone(gamepad.axes[2]);
-      ry = applyDeadzone(gamepad.axes[3]);
-  }
-
-  // Keyboard Movement (WASD) -> Left Stick
-  if (lx === 0 && ly === 0) {
-      if (keys.KeyA || touchInput.moveLeft) lx = -1;
-      if (keys.KeyD || touchInput.moveRight) lx = 1;
-      if (keys.KeyW || touchInput.moveUp) ly = -1;
-      if (keys.KeyS || touchInput.moveDown) ly = 1;
-  }
-
-  // Keyboard Aiming (Arrows) -> Right Stick
-  if (rx === 0 && ry === 0) {
-      if (keys.ArrowLeft) rx = -1;
-      if (keys.ArrowRight) rx = 1;
-      if (keys.ArrowUp) ry = -1;
-      if (keys.ArrowDown) ry = 1;
-  }
-
-  const gpBtn = (i: number) => gamepad?.buttons[i]?.pressed ?? false;
-
-  const input: InputState = {
-      // Analog Sticks
-      leftStick: { x: lx, y: ly },
-      rightStick: { x: rx, y: ry },
-
-      // Movement Flags (Derived from Left Stick)
-      left: lx < -0.5 || gpBtn(GP.Left),
-      right: lx > 0.5 || gpBtn(GP.Right),
-      up: ly < -0.5 || gpBtn(GP.Up),
-      down: ly > 0.5 || gpBtn(GP.Down),
-
-      // Actions
-      jump: keys.Space || gpBtn(GP.A) || !!touchInput.jump,
-      roll: keys.ShiftLeft || keys.ShiftRight || gpBtn(GP.B) || !!touchInput.roll,
-      dash: keys.KeyX || gpBtn(GP.X) || !!touchInput.dash,
-      shoot: keys.KeyC || gpBtn(GP.Y) || gpBtn(GP.RT) || !!touchInput.shoot,
-      throw: keys.KeyV || gpBtn(GP.RB) || !!touchInput.throw,
-      bomb: keys.KeyZ || gpBtn(GP.LB),
-      interact: keys.KeyE || gpBtn(GP.Y) || !!touchInput.interact,
-
-      // Triggers (Calculated below)
-      jumpDown: false, rollDown: false, downDown: false, dashDown: false, 
-      shootDown: false, throwDown: false, bombDown: false, interactDown: false
+  return {
+    input,
+    inputRef,
+    gamepadConnected: Boolean(gamepadName),
+    gamepadName,
+    consumeEdges: () => consumeInputEdges(inputRef),
   };
-
-  // Edge Detection
-  const prev = previousInput.current;
-  input.jumpDown = input.jump && !prev.jump;
-  input.rollDown = input.roll && !prev.roll;
-  input.downDown = input.down && !prev.down;
-  input.dashDown = input.dash && !prev.dash;
-  input.shootDown = input.shoot && !prev.shoot;
-  input.throwDown = input.throw && !prev.throw;
-  input.bombDown = input.bomb && !prev.bomb;
-  input.interactDown = input.interact && !prev.interact;
-
-  previousInput.current = input;
-
-  return input;
 };
-        
